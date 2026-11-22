@@ -55,6 +55,20 @@ jobs:
         run: |
           grep -q 'android.permission.INTERNET' android/app/src/main/AndroidManifest.xml || sed -i '/<application/i\    <uses-permission android:name="android.permission.INTERNET" />' android/app/src/main/AndroidManifest.xml
 
+      - name: Set APK version to workflow build number
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import os, re
+          p = Path("pubspec.yaml")
+          s = p.read_text()
+          run = os.environ["GITHUB_RUN_NUMBER"]
+          s, count = re.subn(r"(?m)^version:\s*[^\n]+$", f"version: 0.2.0+{run}", s, count=1)
+          if count != 1:
+              raise SystemExit("Could not update app version in pubspec.yaml")
+          p.write_text(s)
+          PY
+
       - name: Install Flutter packages
         run: flutter pub get
 
@@ -74,7 +88,7 @@ jobs:
           TAG="android-build-${GITHUB_RUN_NUMBER}"
           gh release create "$TAG" build/app/outputs/flutter-apk/app-release.apk \
             --title "NEXORA AI Android build ${GITHUB_RUN_NUMBER}" \
-            --notes "Automated release APK from commit ${GITHUB_SHA}."
+            --notes "Automated release APK from commit ${GITHUB_SHA}. App build number: ${GITHUB_RUN_NUMBER}."
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
