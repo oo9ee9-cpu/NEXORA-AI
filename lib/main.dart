@@ -93,7 +93,7 @@ Future<void> checkForAppUpdate(BuildContext context,{bool silent=false}) async {
     final info=await PackageInfo.fromPlatform();
     final currentBuild=int.tryParse(info.buildNumber)??0;
     final response=await http.get(Uri.parse('https://api.github.com/repos/oo9ee9-cpu/NEXORA-AI/releases/latest'),headers:{'Accept':'application/vnd.github+json'}).timeout(const Duration(seconds:15));
-    if(response.statusCode!=200)throw Exception('تعذر فحص التحديثات (\${response.statusCode})');
+    if(response.statusCode!=200)throw Exception('تعذر فحص التحديثات (${response.statusCode})');
     final release=jsonDecode(response.body) as Map<String,dynamic>;
     final tag=(release['tag_name']??'').toString();
     final match=RegExp(r'android-build-(\d+)').firstMatch(tag);
@@ -114,7 +114,7 @@ Future<void> checkForAppUpdate(BuildContext context,{bool silent=false}) async {
     if(!context.mounted)return;
     final download=await showDialog<bool>(context:context,barrierDismissible:false,builder:(ctx)=>AlertDialog(
       title:const Text('يتوفر تحديث جديد لـ NEXORA AI'),
-      content:Text('الإصدار المثبت: \${info.version}+\${info.buildNumber}\nالإصدار الجديد: \${tag.replaceAll('android-build-','')}\n\nهل تريد تنزيل التحديث وتثبيته الآن؟'),
+      content:Text('الإصدار المثبت: ${info.version}+${info.buildNumber}\nالإصدار الجديد: ${tag.replaceAll('android-build-','')}\n\nهل تريد تنزيل التحديث وتثبيته الآن؟'),
       actions:[
         TextButton(onPressed:()=>Navigator.pop(ctx,false),child:const Text('إلغاء')),
         FilledButton(onPressed:()=>Navigator.pop(ctx,true),child:const Text('تنزيل التحديث')),
@@ -122,7 +122,7 @@ Future<void> checkForAppUpdate(BuildContext context,{bool silent=false}) async {
     ));
     if(download==true&&context.mounted)await downloadAndInstallApk(context,url);
   } catch(e) {
-    if(!silent&&context.mounted)_snack(context,'تعذر فحص التحديث: \$e');
+    if(!silent&&context.mounted)_snack(context,'تعذر فحص التحديث: $e');
   }
 }
 
@@ -134,12 +134,12 @@ Future<void> downloadAndInstallApk(BuildContext context,String url) async {
   try {
     final client=http.Client();
     final response=await client.send(http.Request('GET',Uri.parse(url))).timeout(const Duration(minutes:4));
-    if(response.statusCode!=200)throw Exception('فشل تنزيل الملف: HTTP \${response.statusCode}');
+    if(response.statusCode!=200)throw Exception('فشل تنزيل الملف: HTTP ${response.statusCode}');
     final builder=BytesBuilder(copy:false);
     await for(final chunk in response.stream){builder.add(chunk);}
     client.close();
     final dir=await getTemporaryDirectory();
-    final file=File('\${dir.path}/nexora-update.apk');
+    final file=File('${dir.path}/nexora-update.apk');
     await file.writeAsBytes(builder.takeBytes(),flush:true);
     if(!await file.exists()||await file.length()<1024)throw Exception('ملف APK الذي تم تنزيله غير صالح');
     if(context.mounted){
@@ -149,7 +149,7 @@ Future<void> downloadAndInstallApk(BuildContext context,String url) async {
   } catch(e) {
     if(context.mounted){
       Navigator.of(context,rootNavigator:true).pop();
-      _snack(context,'تعذر تنزيل أو بدء تثبيت التحديث: \$e');
+      _snack(context,'تعذر تنزيل أو بدء تثبيت التحديث: $e');
     }
   }
 }
