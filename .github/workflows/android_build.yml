@@ -36,6 +36,21 @@ jobs:
       - name: Generate Android platform project
         run: flutter create --platforms=android --org com.nexoraai --project-name nexora_ai .
 
+      - name: Configure Android SDK 36
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36"
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("android/app/build.gradle.kts")
+          s = p.read_text()
+          old = "compileSdk = flutter.compileSdkVersion"
+          if old not in s:
+              raise SystemExit("Could not find generated compileSdk setting in android/app/build.gradle.kts")
+          p.write_text(s.replace(old, "compileSdk = 36", 1))
+          PY
+          grep -n "compileSdk" android/app/build.gradle.kts
+
       - name: Ensure Android internet permission
         run: |
           grep -q 'android.permission.INTERNET' android/app/src/main/AndroidManifest.xml || sed -i '/<application/i\    <uses-permission android:name="android.permission.INTERNET" />' android/app/src/main/AndroidManifest.xml
