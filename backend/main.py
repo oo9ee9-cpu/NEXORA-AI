@@ -1,3 +1,5 @@
+import asyncio
+import json
 import os
 import re
 import sqlite3
@@ -10,6 +12,7 @@ from fastapi import FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from pypdf import PdfReader
+from ddgs import DDGS
 
 ROOT = Path(__file__).resolve().parent
 DB_PATH = Path(os.getenv("NEXORA_DB_PATH", str(ROOT / "nexora.db")))
@@ -222,7 +225,24 @@ def find_knowledge(question: str):
     scored.sort(key=lambda x: x[0], reverse=True)
     return scored[0][1], scored[0][2]
 
-async def ask_provider(question: str):
+def run_web_search(query: str):
+    """Search the public web and return compact, source-linked results."""
+    try:
+        with DDGS(timeout=12) as search:
+            rows = search.text(query, max_results=5)
+        results = []
+        for row in rows or []:
+            title = str(row.get("title") or "").strip()
+            url = str(row.get("href") or row.get("url") or "").strip()
+            snippet = str(row.get("body") or row.get("snippet") or "").strip()
+            if url and (title or snippet):
+                results.append({"title": title or url, "url": url, "snippet": snippet[:900]})
+        return results
+    except Exception as exc:
+        audit("web_search_error", type(exc).__name__)
+        return []
+
+async def ask_provider(question: str, search_results=None):
     with db() as con:
         rows = con.execute("SELECT * FROM providers WHERE enabled=1 ORDER BY priority,id").fetchall()
     errors = []
@@ -237,8 +257,8 @@ async def ask_provider(question: str):
                     url,
                     headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
                     json={"model": row["model"], "messages": [
-                        {"role": "system", "content": "You are NEXORA AI. Answer helpfully, honestly, and in the user's language."},
-                        {"role": "user", "content": question},
+                        {"role": "system", "content": "You are NEXORA AI. Answer helpfully, honestly, and in the user's language. Treat web results as tool outputs, use them when relevant, distinguish facts from uncertainty, never invent sources, and cite sources by their exact URLs."},
+                        {"role": "user", "content": question + ("\n\nWEB SEARCH RESULTS:\n" + json.dumps(search_results, ensure_ascii=False) if search_results else "")},
                     ]},
                 )
             response.raise_for_status()
@@ -254,14 +274,28 @@ async def ask_provider(question: str):
 
 @app.post("/api/chat")
 async def chat(body: ChatIn):
+    # Hidden internal cells: knowledge first, then web search, then the configured AI model.
     local = find_knowledge(body.message)
     if local:
         title, content = local
         answer = f"وجدت المعلومة في قاعدة المعرفة الداخلية ({title}):\n\n{content[:7000]}"
         audit("chat_knowledge_hit", title)
-        return {"answer": answer, "source": "internal_knowledge", "provider": None}
-    answer, provider = await ask_provider(body.message)
-    return {"answer": answer, "source": "provider", "provider": provider}
+        return {"answer": answer, "source": "internal_knowledge", "provider": None, "sources": []}
+
+    web_results = await asyncio.to_thread(run_web_search, body.message)
+    audit("chat_web_search", f"{len(web_results)} results")
+    try:
+        answer, provider = await ask_provider(body.message, web_results)
+        return {"answer": answer, "source": "web_and_provider" if web_results else "provider",
+                "provider": provider, "sources": web_results}
+    except HTTPException as exc:
+        if web_results:
+            lines = ["بحثت في الويب، لكن لم يتم إعداد مزوّد ذكاء اصطناعي بعد. هذه أبرز النتائج:"]
+            for i, item in enumerate(web_results, 1):
+                lines.append(f"\n{i}. {item['title']}\n{item['snippet']}\n{item['url']}")
+            return {"answer": "\n".join(lines), "source": "web_search", "provider": None,
+                    "sources": web_results}
+        raise exc
 
 @app.get("/api/admin/audit")
 def get_audit(x_admin_password: Optional[str] = Header(default=None)):
