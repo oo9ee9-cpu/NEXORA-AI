@@ -6,36 +6,65 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
+
+concurrency:
+  group: nexora-android-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
+    name: Build and publish Android APK
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
-      - name: Checkout source
+      - name: Checkout repository
         uses: actions/checkout@v4
+
       - name: Set up Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
+
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
           channel: stable
           cache: true
-      - name: Generate Android platform files
+
+      - name: Generate Android platform project
         run: flutter create --platforms=android --org com.nexoraai --project-name nexora_ai .
-      - name: Install packages
+
+      - name: Ensure Android internet permission
+        run: |
+          grep -q 'android.permission.INTERNET' android/app/src/main/AndroidManifest.xml || sed -i '/<application/i\    <uses-permission android:name="android.permission.INTERNET" />' android/app/src/main/AndroidManifest.xml
+
+      - name: Install Flutter packages
         run: flutter pub get
-      - name: Analyze Flutter project
-        run: flutter analyze
+
+      - name: Check Dart formatting
+        run: dart format --output=none --set-exit-if-changed lib
+
       - name: Build release APK
         run: flutter build apk --release
+
+      - name: Verify APK
+        run: test -s build/app/outputs/flutter-apk/app-release.apk
+
+      - name: Publish APK release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="android-build-${GITHUB_RUN_NUMBER}"
+          gh release create "$TAG" build/app/outputs/flutter-apk/app-release.apk \
+            --title "NEXORA AI Android build ${GITHUB_RUN_NUMBER}" \
+            --notes "Automated release APK from commit ${GITHUB_SHA}."
+
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: nexora-ai-release-apk
           path: build/app/outputs/flutter-apk/app-release.apk
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 30
