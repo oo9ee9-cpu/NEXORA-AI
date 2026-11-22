@@ -70,7 +70,7 @@ class _RootPageState extends State<RootPage> {
       WidgetsBinding.instance.addPostFrameCallback((_)=>checkForAppUpdate(context, silent:true));
     });
   }
-  void openAdmin(){Navigator.of(context).push(MaterialPageRoute(builder:(_)=>const Scaffold(appBar:AppBar(title:Text('إدارة NEXORA AI')),body:AdminPage())));}
+  void openAdmin(){Navigator.of(context).push(MaterialPageRoute(builder:(_)=>Scaffold(appBar:AppBar(title:const Text('إدارة NEXORA AI')),body:const AdminPage())));}
   Future<void> openSettings()async{
     await showModalBottomSheet(context:context,backgroundColor:const Color(0xFF191B28),builder:(sheet)=>SafeArea(child:Column(mainAxisSize:MainAxisSize.min,children:[
       ListTile(leading:const Icon(Icons.cloud_outlined),title:const Text('اتصال الخادم'),subtitle:Text(Api.base.isEmpty?'لم يتم ربط الخادم بعد':Api.base),onTap:(){Navigator.pop(sheet);showDialog(context:context,builder:(_)=>const ServerDialog());}),
