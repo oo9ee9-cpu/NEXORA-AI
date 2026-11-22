@@ -1,6 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
-import 'package:apk_sideload/apk_sideload.dart';
+import 'package:apk_sideload/install_apk.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:file_picker/file_picker.dart';
