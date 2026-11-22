@@ -57,19 +57,20 @@ class Api {
 
 class RootPage extends StatefulWidget { const RootPage({super.key}); @override State<RootPage> createState()=>_RootPageState(); }
 class _RootPageState extends State<RootPage> {
-  int tab=0; bool loaded=false;
+  bool loaded=false;
   @override void initState(){super.initState();Api.load().then((_){if(mounted)setState(()=>loaded=true);});}
+  void openAdmin(){Navigator.of(context).push(MaterialPageRoute(builder:(_)=>const Scaffold(appBar:AppBar(title:Text('إدارة NEXORA AI')),body:AdminPage())));}
+  Future<void> openSettings()async{
+    await showModalBottomSheet(context:context,backgroundColor:const Color(0xFF191B28),builder:(sheet)=>SafeArea(child:Column(mainAxisSize:MainAxisSize.min,children:[
+      ListTile(leading:const Icon(Icons.cloud_outlined),title:const Text('اتصال الخادم'),subtitle:Text(Api.base.isEmpty?'لم يتم ربط الخادم بعد':Api.base),onTap:(){Navigator.pop(sheet);showDialog(context:context,builder:(_)=>const ServerDialog());}),
+      ListTile(leading:const Icon(Icons.admin_panel_settings_outlined),title:const Text('إدارة النظام'),subtitle:const Text('المزوّدون وقاعدة المعرفة'),onTap:(){Navigator.pop(sheet);openAdmin();}),
+    ])));
+  }
   @override Widget build(BuildContext context) {
     if(!loaded)return const Scaffold(body:Center(child:CircularProgressIndicator()));
-    final pages=[const ChatPage(),const CellsPage(),const AdminPage()];
     return Scaffold(
-      appBar:AppBar(title:const Row(children:[Icon(Icons.hub,color:Color(0xFFB09EFF)),SizedBox(width:9),Text('NEXORA AI',style:TextStyle(fontWeight:FontWeight.w800))]),actions:[IconButton(onPressed:()=>showDialog(context:context,builder:(_)=>const ServerDialog()),icon:const Icon(Icons.settings))]),
-      body:pages[tab],
-      bottomNavigationBar:NavigationBar(selectedIndex:tab,onDestinationSelected:(v)=>setState(()=>tab=v),destinations:const[
-        NavigationDestination(icon:Icon(Icons.chat_bubble_outline),label:'المحادثة'),
-        NavigationDestination(icon:Icon(Icons.grid_view),label:'الخلايا'),
-        NavigationDestination(icon:Icon(Icons.admin_panel_settings_outlined),label:'الإدارة'),
-      ]),
+      appBar:AppBar(title:const Row(children:[Icon(Icons.hub,color:Color(0xFFB09EFF)),SizedBox(width:9),Text('NEXORA AI',style:TextStyle(fontWeight:FontWeight.w800))]),actions:[IconButton(onPressed:openSettings,icon:const Icon(Icons.settings))]),
+      body:const ChatPage(),
     );
   }
 }
