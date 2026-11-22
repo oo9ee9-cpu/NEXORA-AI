@@ -1,4 +1,8 @@
 import 'dart:convert';
+import 'dart:io';
+import 'package:apk_sideload/apk_sideload.dart';
+import 'package:package_info_plus/package_info_plus.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
@@ -58,11 +62,19 @@ class Api {
 class RootPage extends StatefulWidget { const RootPage({super.key}); @override State<RootPage> createState()=>_RootPageState(); }
 class _RootPageState extends State<RootPage> {
   bool loaded=false;
-  @override void initState(){super.initState();Api.load().then((_){if(mounted)setState(()=>loaded=true);});}
+  @override void initState(){
+    super.initState();
+    Api.load().then((_){
+      if(!mounted)return;
+      setState(()=>loaded=true);
+      WidgetsBinding.instance.addPostFrameCallback((_)=>checkForAppUpdate(context, silent:true));
+    });
+  }
   void openAdmin(){Navigator.of(context).push(MaterialPageRoute(builder:(_)=>const Scaffold(appBar:AppBar(title:Text('إدارة NEXORA AI')),body:AdminPage())));}
   Future<void> openSettings()async{
     await showModalBottomSheet(context:context,backgroundColor:const Color(0xFF191B28),builder:(sheet)=>SafeArea(child:Column(mainAxisSize:MainAxisSize.min,children:[
       ListTile(leading:const Icon(Icons.cloud_outlined),title:const Text('اتصال الخادم'),subtitle:Text(Api.base.isEmpty?'لم يتم ربط الخادم بعد':Api.base),onTap:(){Navigator.pop(sheet);showDialog(context:context,builder:(_)=>const ServerDialog());}),
+      ListTile(leading:const Icon(Icons.system_update_alt),title:const Text('التحقق من وجود تحديث'),subtitle:const Text('تنزيل أحدث إصدار من NEXORA AI'),onTap:(){Navigator.pop(sheet);checkForAppUpdate(context);}),
       ListTile(leading:const Icon(Icons.admin_panel_settings_outlined),title:const Text('إدارة النظام'),subtitle:const Text('المزوّدون وقاعدة المعرفة'),onTap:(){Navigator.pop(sheet);openAdmin();}),
     ])));
   }
@@ -72,6 +84,73 @@ class _RootPageState extends State<RootPage> {
       appBar:AppBar(title:const Row(children:[Icon(Icons.hub,color:Color(0xFFB09EFF)),SizedBox(width:9),Text('NEXORA AI',style:TextStyle(fontWeight:FontWeight.w800))]),actions:[IconButton(onPressed:openSettings,icon:const Icon(Icons.settings))]),
       body:const ChatPage(),
     );
+  }
+}
+
+
+Future<void> checkForAppUpdate(BuildContext context,{bool silent=false}) async {
+  try {
+    final info=await PackageInfo.fromPlatform();
+    final currentBuild=int.tryParse(info.buildNumber)??0;
+    final response=await http.get(Uri.parse('https://api.github.com/repos/oo9ee9-cpu/NEXORA-AI/releases/latest'),headers:{'Accept':'application/vnd.github+json'}).timeout(const Duration(seconds:15));
+    if(response.statusCode!=200)throw Exception('تعذر فحص التحديثات (\${response.statusCode})');
+    final release=jsonDecode(response.body) as Map<String,dynamic>;
+    final tag=(release['tag_name']??'').toString();
+    final match=RegExp(r'android-build-(\d+)').firstMatch(tag);
+    final latestBuild=int.tryParse(match?.group(1)??'')??0;
+    final assets=(release['assets'] as List? ?? const []);
+    Map<String,dynamic>? apk;
+    for(final item in assets){
+      final a=Map<String,dynamic>.from(item as Map);
+      if((a['name']??'').toString().toLowerCase().endsWith('.apk')){apk=a;break;}
+    }
+    if(apk==null)throw Exception('لم يتم العثور على ملف APK في آخر إصدار');
+    final url=(apk['browser_download_url']??'').toString();
+    if(url.isEmpty)throw Exception('رابط التحديث غير متوفر');
+    if(latestBuild<=currentBuild){
+      if(!silent&&context.mounted)_snack(context,'تطبيقك محدث إلى آخر إصدار.');
+      return;
+    }
+    if(!context.mounted)return;
+    final download=await showDialog<bool>(context:context,barrierDismissible:false,builder:(ctx)=>AlertDialog(
+      title:const Text('يتوفر تحديث جديد لـ NEXORA AI'),
+      content:Text('الإصدار المثبت: \${info.version}+\${info.buildNumber}\nالإصدار الجديد: \${tag.replaceAll('android-build-','')}\n\nهل تريد تنزيل التحديث وتثبيته الآن؟'),
+      actions:[
+        TextButton(onPressed:()=>Navigator.pop(ctx,false),child:const Text('إلغاء')),
+        FilledButton(onPressed:()=>Navigator.pop(ctx,true),child:const Text('تنزيل التحديث')),
+      ],
+    ));
+    if(download==true&&context.mounted)await downloadAndInstallApk(context,url);
+  } catch(e) {
+    if(!silent&&context.mounted)_snack(context,'تعذر فحص التحديث: \$e');
+  }
+}
+
+Future<void> downloadAndInstallApk(BuildContext context,String url) async {
+  if(!context.mounted)return;
+  showDialog<void>(context:context,barrierDismissible:false,builder:(_)=>const AlertDialog(
+    content:Row(children:[CircularProgressIndicator(),SizedBox(width:18),Expanded(child:Text('جارٍ تنزيل التحديث...'))]),
+  ));
+  try {
+    final client=http.Client();
+    final response=await client.send(http.Request('GET',Uri.parse(url))).timeout(const Duration(minutes:4));
+    if(response.statusCode!=200)throw Exception('فشل تنزيل الملف: HTTP \${response.statusCode}');
+    final builder=BytesBuilder(copy:false);
+    await for(final chunk in response.stream){builder.add(chunk);}
+    client.close();
+    final dir=await getTemporaryDirectory();
+    final file=File('\${dir.path}/nexora-update.apk');
+    await file.writeAsBytes(builder.takeBytes(),flush:true);
+    if(!await file.exists()||await file.length()<1024)throw Exception('ملف APK الذي تم تنزيله غير صالح');
+    if(context.mounted){
+      Navigator.of(context,rootNavigator:true).pop();
+      await InstallApk().installApk(file.path);
+    }
+  } catch(e) {
+    if(context.mounted){
+      Navigator.of(context,rootNavigator:true).pop();
+      _snack(context,'تعذر تنزيل أو بدء تثبيت التحديث: \$e');
+    }
   }
 }
 
