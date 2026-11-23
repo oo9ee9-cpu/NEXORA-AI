@@ -171,7 +171,7 @@ class _ChatPageState extends State<ChatPage> {
     final q=input.text.trim();
     if(q.isEmpty || busy)return;
     if(apiKey==null || apiKey!.isEmpty){await configureKey(required:true);if(apiKey==null || apiKey!.isEmpty)return;}
-    setState(()=>{messages.add((text:q,user:true)),input.clear(),busy=true});
+    setState(() { messages.add((text:q,user:true)); input.clear(); busy=true; });
     scrollBottom();
     try { final answer=await NexoraEngine.ask(q,apiKey!); if(mounted)setState(()=>messages.add((text:answer,user:false))); }
     catch(e){if(mounted)setState(()=>messages.add((text:'تعذر إكمال الطلب: $e',user:false)));}
