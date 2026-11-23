@@ -1,5 +1,5 @@
 name: nexora_ai
-description: NEXORA AI modular assistant and administration app.
+description: NEXORA AI single-screen conversational web-search assistant.
 publish_to: "none"
 version: 0.2.0+2
 environment:
@@ -9,8 +9,8 @@ dependencies:
     sdk: flutter
   cupertino_icons: ^1.0.8
   http: ^1.2.2
-  shared_preferences: ^2.3.2
-  file_picker: ^10.3.10
+  html: ^0.15.6
+  flutter_secure_storage: ^9.2.4
   package_info_plus: ^9.0.0
   path_provider: ^2.1.5
   apk_sideload: ^0.0.1
