@@ -1,42 +1,24 @@
 # NEXORA AI
 
-NEXORA AI is an Android Flutter client plus a Python API backend.
+NEXORA AI is a single-screen Android conversational assistant.
 
-## Current implementation
+## App experience
 
-- Arabic Flutter client with chat, cell status controls, provider administration and knowledge entry.
-- FastAPI backend with SQLite persistence.
-- Internal knowledge lookup is attempted before an AI provider call.
-- OpenAI-compatible chat-completions providers with priority fallback.
-- Provider API keys are encrypted at rest using Fernet.
-- PDF text extraction (selectable-text PDFs; scanned PDFs need OCR, not included yet).
-- GitHub Actions workflow builds a release APK artifact.
+- One chat interface; no owner dashboard, admin panel, cell tabs, or server-address setup.
+- User messages are handled automatically.
+- For non-greeting questions, the app searches the web and passes the collected results to Gemini for analysis and a response.
+- Answers are shown in the same conversation.
+- In-app update check downloads the latest APK release and opens Android's installer after user approval.
 
-## Backend deployment
+## First launch
 
-Deploy the `backend/` directory as a persistent Docker service. The service must have persistent storage mounted at `/data`.
+On the first message, the app asks for a Gemini API key. The key is stored in Android secure storage on the device and sent directly to Google's Gemini API. No private backend or hosting service is required.
 
-Set these environment variables on the hosting service:
+Create a key using Google AI Studio:
+https://aistudio.google.com/app/apikey
 
-- `ADMIN_PASSWORD`: long unique administrator password.
-- `NEXORA_MASTER_KEY`: Fernet key generated using `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`.
-- `NEXORA_DB_PATH=/data/nexora.db`
-- `CORS_ORIGINS=*` (restrict to trusted origins if a web admin is later added).
+The app currently uses the Gemini `gemini-2.5-flash` model and DuckDuckGo HTML search results. Web search availability depends on DuckDuckGo's public endpoint and may occasionally be unavailable.
 
-Run locally with:
+## Build
 
-```bash
-cd backend
-pip install -r requirements.txt
-uvicorn main:app --host 0.0.0.0 --port 8000
-```
-
-The Android app's Settings screen requires the public HTTPS backend URL and admin password. Do not put provider keys in the APK.
-
-## Add an AI provider
-
-In the app, open Administration → Add API provider. Enter an OpenAI-compatible base URL (for example a provider URL ending in `/v1`), model ID, and API key. The backend encrypts the key before storing it. The provider must support `POST /chat/completions`.
-
-## Important scope
-
-This is a working first backend/mobile vertical slice, not yet the complete multi-agent platform described in the product brief. Web search, autonomous GitHub code editing, multi-user authentication/roles, OCR, embeddings/vector retrieval, and production deployment still need implementation. The APK build does not provision or host the backend.
+GitHub Actions builds the Android release APK on pushes to `main` and publishes it as a GitHub Release asset.
