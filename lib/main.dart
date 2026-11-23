@@ -1,12 +1,16 @@
 import 'dart:convert';
 import 'dart:io';
 import 'package:apk_sideload/install_apk.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:html/parser.dart' as html_parser;
+import 'package:http/http.dart' as http;
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:file_picker/file_picker.dart';
-import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
-import 'package:shared_preferences/shared_preferences.dart';
+
+const secureStore = FlutterSecureStorage();
+const keyName = 'nexora_gemini_api_key';
+const modelName = 'gemini-2.5-flash';
 
 void main() => runApp(const NexoraApp());
 
@@ -19,220 +23,182 @@ class NexoraApp extends StatelessWidget {
     theme: ThemeData(
       brightness: Brightness.dark,
       useMaterial3: true,
-      colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF8B72FF), brightness: Brightness.dark),
+      colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF9B83FF), brightness: Brightness.dark),
       scaffoldBackgroundColor: const Color(0xFF090B12),
     ),
-    home: const RootPage(),
+    home: const ChatPage(),
   );
 }
 
-class Api {
-  static String base = '';
-  static String admin = '';
-  static Future<void> load() async {
-    final p = await SharedPreferences.getInstance();
-    base = p.getString('server') ?? '';
-    admin = p.getString('admin') ?? '';
+class NexoraEngine {
+  static Future<List<Map<String,String>>> search(String query) async {
+    final uri = Uri.https('html.duckduckgo.com', '/html/', {'q': query});
+    final res = await http.get(uri, headers: {
+      'User-Agent': 'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/122 Mobile Safari/537.36'
+    }).timeout(const Duration(seconds: 18));
+    if (res.statusCode != 200) throw Exception('تعذر البحث في الإنترنت: HTTP ${res.statusCode}');
+    final doc = html_parser.parse(res.body);
+    final items = <Map<String,String>>[];
+    for (final node in doc.querySelectorAll('.result')) {
+      final a = node.querySelector('.result__a');
+      if (a == null) continue;
+      var url = a.attributes['href'] ?? '';
+      final parsed = Uri.tryParse(url);
+      if (parsed != null && parsed.queryParameters['uddg'] != null) url = parsed.queryParameters['uddg']!;
+      if (!url.startsWith('http')) continue;
+      final title = a.text.trim();
+      final snippet = node.querySelector('.result__snippet')?.text.trim() ?? '';
+      if (title.isNotEmpty) items.add({'title':title,'url':url,'snippet':snippet});
+      if (items.length >= 6) break;
+    }
+    return items;
   }
-  static Future<void> save(String url, String password) async {
-    final p = await SharedPreferences.getInstance();
-    base = url.trim().replaceAll(RegExp(r'/$'), '');
-    admin = password;
-    await p.setString('server', base);
-    await p.setString('admin', admin);
-  }
-  static Map<String,String> get headers => {'Content-Type':'application/json', if(admin.isNotEmpty)'X-Admin-Password':admin};
-  static Future<dynamic> get(String path) async {
-    final r=await http.get(Uri.parse('$base$path'),headers:headers).timeout(const Duration(seconds:20));
-    if(r.statusCode>=400) throw Exception(r.body);
-    return jsonDecode(r.body);
-  }
-  static Future<dynamic> post(String path,Map<String,dynamic> body) async {
-    final r=await http.post(Uri.parse('$base$path'),headers:headers,body:jsonEncode(body)).timeout(const Duration(seconds:60));
-    if(r.statusCode>=400) throw Exception(r.body);
-    return jsonDecode(r.body);
-  }
-  static Future<dynamic> patch(String path,Map<String,dynamic> body) async {
-    final r=await http.patch(Uri.parse('$base$path'),headers:headers,body:jsonEncode(body)).timeout(const Duration(seconds:30));
-    if(r.statusCode>=400) throw Exception(r.body);
-    return jsonDecode(r.body);
+
+  static Future<String> ask(String question, String key) async {
+    final greeting = RegExp(r'^(مرحبا|مرحباً|هلا|هلو|السلام عليكم|سلام|اهلا|أهلا|hello|hi|hey)[!！。.؟? ]*$', caseSensitive:false).hasMatch(question.trim());
+    List<Map<String,String>> results = [];
+    if (!greeting) {
+      try { results = await search(question); } catch (_) {}
+    }
+    final sources = results.isEmpty ? 'لم تتوفر نتائج بحث ويب.' : results.asMap().entries.map((e) =>
+      '[${e.key+1}] ${e.value['title']}\n${e.value['snippet']}\n${e.value['url']}').join('\n\n');
+    final prompt = '''
+رسالة المستخدم:
+$question
+
+نتائج البحث من الإنترنت:
+$sources
+
+أجب بلغة المستخدم. حلل نتائج البحث واكتب إجابة مفصلة وواضحة عند توفر المصادر، وأدرج روابطها الأصلية. لا تخترع معلومات أو روابط، واذكر بوضوح إن لم تكفِ المصادر. إذا كانت الرسالة تحية، رحّب بالمستخدم واسأله كيف تساعده.
+''';
+    final uri = Uri.parse('https://generativelanguage.googleapis.com/v1beta/models/$modelName:generateContent?key=${Uri.encodeQueryComponent(key)}');
+    final res = await http.post(uri, headers:{'Content-Type':'application/json'}, body:jsonEncode({
+      'systemInstruction': {'parts':[{'text':'أنت NEXORA AI، مساعد ذكي عام ودقيق وصريح.'}]},
+      'contents':[{'role':'user','parts':[{'text':prompt}]}],
+      'generationConfig':{'temperature':0.4,'maxOutputTokens':4096}
+    })).timeout(const Duration(seconds:90));
+    if (res.statusCode < 200 || res.statusCode >= 300) {
+      var detail = res.body;
+      try { detail = jsonDecode(res.body)['error']['message']?.toString() ?? res.body; } catch (_) {}
+      throw Exception('خدمة الذكاء الاصطناعي: $detail');
+    }
+    final data = jsonDecode(res.body) as Map<String,dynamic>;
+    final candidates = data['candidates'] as List? ?? [];
+    if (candidates.isEmpty) throw Exception('لم يُرجع النموذج إجابة.');
+    final parts = candidates.first['content']['parts'] as List? ?? [];
+    final answer = parts.map((p)=>(p as Map)['text']?.toString() ?? '').join('\n').trim();
+    if (answer.isEmpty) throw Exception('الإجابة فارغة.');
+    return answer;
   }
 }
 
-class RootPage extends StatefulWidget { const RootPage({super.key}); @override State<RootPage> createState()=>_RootPageState(); }
-class _RootPageState extends State<RootPage> {
-  bool loaded=false;
-  @override void initState(){
+Future<void> checkUpdates(BuildContext context, {bool silent=false}) async {
+  try {
+    final info = await PackageInfo.fromPlatform();
+    final current = int.tryParse(info.buildNumber) ?? 0;
+    final res = await http.get(Uri.parse('https://api.github.com/repos/oo9ee9-cpu/NEXORA-AI/releases/latest'), headers:{'Accept':'application/vnd.github+json'}).timeout(const Duration(seconds:15));
+    if (res.statusCode != 200) throw Exception('تعذر فحص التحديثات: HTTP ${res.statusCode}');
+    final release = jsonDecode(res.body) as Map<String,dynamic>;
+    final tag = (release['tag_name'] ?? '').toString();
+    final match = RegExp(r'android-build-(\d+)').firstMatch(tag);
+    final latest = int.tryParse(match?.group(1) ?? '') ?? 0;
+    final assets = release['assets'] as List? ?? [];
+    Map? apk;
+    for (final a in assets) { if ((a['name'] ?? '').toString().toLowerCase().endsWith('.apk')) { apk=a; break; } }
+    if (apk == null) throw Exception('لم يتم العثور على ملف APK');
+    if (latest <= current) { if (!silent && context.mounted) showMsg(context,'تطبيقك محدث إلى آخر إصدار.'); return; }
+    if (!context.mounted) return;
+    final yes = await showDialog<bool>(context:context,builder:(d)=>AlertDialog(
+      title:const Text('يتوفر تحديث جديد'),
+      content:Text('الإصدار الحالي: ${info.version}+${info.buildNumber}\nالإصدار الجديد: ${tag.replaceAll('android-build-','')}\n\nهل تريد تنزيل التحديث؟'),
+      actions:[TextButton(onPressed:()=>Navigator.pop(d,false),child:const Text('إلغاء')),FilledButton(onPressed:()=>Navigator.pop(d,true),child:const Text('تنزيل التحديث'))],
+    ));
+    if (yes == true && context.mounted) await downloadUpdate(context, apk['browser_download_url'].toString());
+  } catch(e) { if (!silent && context.mounted) showMsg(context,'تعذر فحص التحديث: $e'); }
+}
+
+Future<void> downloadUpdate(BuildContext context, String url) async {
+  showDialog<void>(context:context,barrierDismissible:false,builder:(_)=>const AlertDialog(content:Row(children:[CircularProgressIndicator(),SizedBox(width:16),Expanded(child:Text('جارٍ تنزيل التحديث...'))])));
+  try {
+    final res = await http.get(Uri.parse(url)).timeout(const Duration(minutes:4));
+    if (res.statusCode != 200) throw Exception('فشل التنزيل: HTTP ${res.statusCode}');
+    final dir = await getTemporaryDirectory();
+    final file = File('${dir.path}/nexora-update.apk');
+    await file.writeAsBytes(res.bodyBytes,flush:true);
+    if (await file.length() < 1024) throw Exception('ملف التحديث غير صالح');
+    if (context.mounted) { Navigator.of(context,rootNavigator:true).pop(); await InstallApk().installApk(file.path); }
+  } catch(e) { if (context.mounted) { Navigator.of(context,rootNavigator:true).pop(); showMsg(context,'تعذر تثبيت التحديث: $e'); } }
+}
+
+void showMsg(BuildContext context,String text) => ScaffoldMessenger.of(context).showSnackBar(SnackBar(content:Text(text)));
+
+class ChatPage extends StatefulWidget {
+  const ChatPage({super.key});
+  @override State<ChatPage> createState()=>_ChatPageState();
+}
+class _ChatPageState extends State<ChatPage> {
+  final input=TextEditingController();
+  final scroll=ScrollController();
+  final messages=<({String text,bool user})>[];
+  String? apiKey;
+  bool busy=false;
+
+  @override void initState() {
     super.initState();
-    Api.load().then((_){
-      if(!mounted)return;
-      setState(()=>loaded=true);
-      WidgetsBinding.instance.addPostFrameCallback((_)=>checkForAppUpdate(context, silent:true));
-    });
+    secureStore.read(key:keyName).then((v){if(mounted)setState(()=>apiKey=v);});
+    WidgetsBinding.instance.addPostFrameCallback((_){checkUpdates(context,silent:true);});
   }
-  void openAdmin(){Navigator.of(context).push(MaterialPageRoute(builder:(_)=>Scaffold(appBar:AppBar(title:const Text('إدارة NEXORA AI')),body:const AdminPage())));}
-  Future<void> openSettings()async{
-    await showModalBottomSheet(context:context,backgroundColor:const Color(0xFF191B28),builder:(sheet)=>SafeArea(child:Column(mainAxisSize:MainAxisSize.min,children:[
-      ListTile(leading:const Icon(Icons.cloud_outlined),title:const Text('اتصال الخادم'),subtitle:Text(Api.base.isEmpty?'لم يتم ربط الخادم بعد':Api.base),onTap:(){Navigator.pop(sheet);showDialog(context:context,builder:(_)=>const ServerDialog());}),
-      ListTile(leading:const Icon(Icons.system_update_alt),title:const Text('التحقق من وجود تحديث'),subtitle:const Text('تنزيل أحدث إصدار من NEXORA AI'),onTap:(){Navigator.pop(sheet);checkForAppUpdate(context);}),
-      ListTile(leading:const Icon(Icons.admin_panel_settings_outlined),title:const Text('إدارة النظام'),subtitle:const Text('المزوّدون وقاعدة المعرفة'),onTap:(){Navigator.pop(sheet);openAdmin();}),
+  @override void dispose(){input.dispose();scroll.dispose();super.dispose();}
+
+  Future<void> configureKey({bool required=false}) async {
+    final c=TextEditingController(text:apiKey ?? '');
+    final value=await showDialog<String>(context:context,builder:(d)=>AlertDialog(
+      title:const Text('تفعيل NEXORA AI'),
+      content:Column(mainAxisSize:MainAxisSize.min,children:[
+        const Text('أدخل مفتاح Gemini API لتشغيل المحادثة والبحث الذكي. يُحفظ المفتاح بأمان على هذا الجهاز فقط.'),
+        const SizedBox(height:12),
+        TextField(controller:c,obscureText:true,decoration:const InputDecoration(labelText:'Gemini API Key',border:OutlineInputBorder())),
+        const SizedBox(height:8),
+        const Text('يمكنك إنشاء مفتاح من Google AI Studio.',style:TextStyle(fontSize:12,color:Colors.white60)),
+      ]),
+      actions:[if(!required)TextButton(onPressed:()=>Navigator.pop(d),child:const Text('إلغاء')),FilledButton(onPressed:()=>Navigator.pop(d,c.text.trim()),child:const Text('حفظ'))],
+    ));
+    c.dispose();
+    if(value!=null && value.isNotEmpty){await secureStore.write(key:keyName,value:value);if(mounted)setState(()=>apiKey=value);}
+  }
+
+  Future<void> send() async {
+    final q=input.text.trim();
+    if(q.isEmpty || busy)return;
+    if(apiKey==null || apiKey!.isEmpty){await configureKey(required:true);if(apiKey==null || apiKey!.isEmpty)return;}
+    setState(()=>{messages.add((text:q,user:true)),input.clear(),busy=true});
+    scrollBottom();
+    try { final answer=await NexoraEngine.ask(q,apiKey!); if(mounted)setState(()=>messages.add((text:answer,user:false))); }
+    catch(e){if(mounted)setState(()=>messages.add((text:'تعذر إكمال الطلب: $e',user:false)));}
+    finally{if(mounted)setState(()=>busy=false);scrollBottom();}
+  }
+  void scrollBottom()=>WidgetsBinding.instance.addPostFrameCallback((_){if(scroll.hasClients)scroll.animateTo(scroll.position.maxScrollExtent,duration:const Duration(milliseconds:250),curve:Curves.easeOut);});
+
+  Future<void> openSettings() async {
+    await showModalBottomSheet<void>(context:context,backgroundColor:const Color(0xFF191B28),builder:(d)=>SafeArea(child:Column(mainAxisSize:MainAxisSize.min,children:[
+      ListTile(leading:const Icon(Icons.key),title:const Text('إعداد مفتاح الذكاء الاصطناعي'),onTap:(){Navigator.pop(d);configureKey();}),
+      ListTile(leading:const Icon(Icons.system_update_alt),title:const Text('التحقق من وجود تحديث'),onTap:(){Navigator.pop(d);checkUpdates(context);}),
     ])));
   }
-  @override Widget build(BuildContext context) {
-    if(!loaded)return const Scaffold(body:Center(child:CircularProgressIndicator()));
-    return Scaffold(
-      appBar:AppBar(title:const Row(children:[Icon(Icons.hub,color:Color(0xFFB09EFF)),SizedBox(width:9),Text('NEXORA AI',style:TextStyle(fontWeight:FontWeight.w800))]),actions:[IconButton(onPressed:openSettings,icon:const Icon(Icons.settings))]),
-      body:const ChatPage(),
-    );
-  }
-}
 
-
-Future<void> checkForAppUpdate(BuildContext context,{bool silent=false}) async {
-  try {
-    final info=await PackageInfo.fromPlatform();
-    final currentBuild=int.tryParse(info.buildNumber)??0;
-    final response=await http.get(Uri.parse('https://api.github.com/repos/oo9ee9-cpu/NEXORA-AI/releases/latest'),headers:{'Accept':'application/vnd.github+json'}).timeout(const Duration(seconds:15));
-    if(response.statusCode!=200)throw Exception('تعذر فحص التحديثات (${response.statusCode})');
-    final release=jsonDecode(response.body) as Map<String,dynamic>;
-    final tag=(release['tag_name']??'').toString();
-    final match=RegExp(r'android-build-(\d+)').firstMatch(tag);
-    final latestBuild=int.tryParse(match?.group(1)??'')??0;
-    final assets=(release['assets'] as List? ?? const []);
-    Map<String,dynamic>? apk;
-    for(final item in assets){
-      final a=Map<String,dynamic>.from(item as Map);
-      if((a['name']??'').toString().toLowerCase().endsWith('.apk')){apk=a;break;}
-    }
-    if(apk==null)throw Exception('لم يتم العثور على ملف APK في آخر إصدار');
-    final url=(apk['browser_download_url']??'').toString();
-    if(url.isEmpty)throw Exception('رابط التحديث غير متوفر');
-    if(latestBuild<=currentBuild){
-      if(!silent&&context.mounted)_snack(context,'تطبيقك محدث إلى آخر إصدار.');
-      return;
-    }
-    if(!context.mounted)return;
-    final download=await showDialog<bool>(context:context,barrierDismissible:false,builder:(ctx)=>AlertDialog(
-      title:const Text('يتوفر تحديث جديد لـ NEXORA AI'),
-      content:Text('الإصدار المثبت: ${info.version}+${info.buildNumber}\nالإصدار الجديد: ${tag.replaceAll('android-build-','')}\n\nهل تريد تنزيل التحديث وتثبيته الآن؟'),
-      actions:[
-        TextButton(onPressed:()=>Navigator.pop(ctx,false),child:const Text('إلغاء')),
-        FilledButton(onPressed:()=>Navigator.pop(ctx,true),child:const Text('تنزيل التحديث')),
-      ],
-    ));
-    if(download==true&&context.mounted)await downloadAndInstallApk(context,url);
-  } catch(e) {
-    if(!silent&&context.mounted)_snack(context,'تعذر فحص التحديث: $e');
-  }
-}
-
-Future<void> downloadAndInstallApk(BuildContext context,String url) async {
-  if(!context.mounted)return;
-  showDialog<void>(context:context,barrierDismissible:false,builder:(_)=>const AlertDialog(
-    content:Row(children:[CircularProgressIndicator(),SizedBox(width:18),Expanded(child:Text('جارٍ تنزيل التحديث...'))]),
-  ));
-  try {
-    final client=http.Client();
-    final response=await client.send(http.Request('GET',Uri.parse(url))).timeout(const Duration(minutes:4));
-    if(response.statusCode!=200)throw Exception('فشل تنزيل الملف: HTTP ${response.statusCode}');
-    final builder=BytesBuilder(copy:false);
-    await for(final chunk in response.stream){builder.add(chunk);}
-    client.close();
-    final dir=await getTemporaryDirectory();
-    final file=File('${dir.path}/nexora-update.apk');
-    await file.writeAsBytes(builder.takeBytes(),flush:true);
-    if(!await file.exists()||await file.length()<1024)throw Exception('ملف APK الذي تم تنزيله غير صالح');
-    if(context.mounted){
-      Navigator.of(context,rootNavigator:true).pop();
-      await InstallApk().installApk(file.path);
-    }
-  } catch(e) {
-    if(context.mounted){
-      Navigator.of(context,rootNavigator:true).pop();
-      _snack(context,'تعذر تنزيل أو بدء تثبيت التحديث: $e');
-    }
-  }
-}
-
-class ChatPage extends StatefulWidget { const ChatPage({super.key}); @override State<ChatPage> createState()=>_ChatPageState(); }
-class _ChatPageState extends State<ChatPage> {
-  final input=TextEditingController(); final scroll=ScrollController(); final messages=<Map<String,String>>[]; bool busy=false;
-  @override void dispose(){input.dispose();scroll.dispose();super.dispose();}
-  Future<void> send() async {
-    final q=input.text.trim(); if(q.isEmpty||busy)return;
-    setState((){messages.add({'role':'user','text':q});input.clear();busy=true;});
-    try {
-      if(Api.base.isEmpty)throw Exception('اضبط عنوان الخادم من زر الإعدادات أولاً.');
-      final d=await Api.post('/api/chat',{'message':q});
-      setState(()=>messages.add({'role':'assistant','text':d['answer']?.toString()??'لا توجد إجابة'}));
-    } catch(e){setState(()=>messages.add({'role':'assistant','text':'تعذر الاتصال: $e'}));}
-    finally{if(mounted)setState(()=>busy=false);WidgetsBinding.instance.addPostFrameCallback((_){if(scroll.hasClients)scroll.animateTo(scroll.position.maxScrollExtent,duration:const Duration(milliseconds:250),curve:Curves.easeOut);});}
-  }
-  @override Widget build(BuildContext context)=>Column(children:[
-    Expanded(child:messages.isEmpty?const Center(child:Padding(padding:EdgeInsets.all(28),child:Column(mainAxisSize:MainAxisSize.min,children:[Icon(Icons.auto_awesome,size:58,color:Color(0xFFAA98FF)),SizedBox(height:18),Text('مرحباً بك في NEXORA AI',style:TextStyle(fontSize:23,fontWeight:FontWeight.bold)),SizedBox(height:10),Text('يفهم رسالتك، يبحث في المعرفة والإنترنت عند الحاجة، ثم يستخدم الذكاء الاصطناعي ليجيبك داخل المحادثة.',textAlign:TextAlign.center,style:TextStyle(color:Colors.white70,height:1.7))]))):ListView.builder(controller:scroll,padding:const EdgeInsets.all(14),itemCount:messages.length,itemBuilder:(c,i){final m=messages[i];final user=m['role']=='user';return Align(alignment:user?Alignment.centerRight:Alignment.centerLeft,child:Container(margin:const EdgeInsets.symmetric(vertical:6),padding:const EdgeInsets.all(14),constraints:const BoxConstraints(maxWidth:340),decoration:BoxDecoration(color:user?const Color(0xFF30275A):const Color(0xFF191B28),borderRadius:BorderRadius.circular(17)),child:Text(m['text']??'',style:const TextStyle(height:1.5))));})),
-    if(busy)const LinearProgressIndicator(),
-    Padding(padding:const EdgeInsets.fromLTRB(12,8,12,14),child:Row(children:[Expanded(child:TextField(controller:input,onSubmitted:(_)=>send(),minLines:1,maxLines:4,decoration:InputDecoration(hintText:'اكتب رسالتك...',filled:true,fillColor:const Color(0xFF191B28),border:OutlineInputBorder(borderRadius:BorderRadius.circular(18),borderSide:BorderSide.none)))),const SizedBox(width:8),IconButton.filled(onPressed:busy?null:send,icon:const Icon(Icons.send))]))
-  ]);
-}
-
-class CellsPage extends StatefulWidget {const CellsPage({super.key});@override State<CellsPage> createState()=>_CellsPageState();}
-class _CellsPageState extends State<CellsPage>{
-  List cells=[];String? error;bool loading=true;
-  Future<void> load()async{try{final d=await Api.get('/api/cells');setState((){cells=d['cells']??[];error=null;});}catch(e){setState(()=>error=e.toString());}finally{setState(()=>loading=false);}}
-  @override void initState(){super.initState();load();}
-  Future<void> toggle(Map c)async{try{await Api.patch('/api/cells/${c['id']}',{'enabled':!(c['enabled']==true)});await load();}catch(e){_snack(context,e.toString());}}
-  @override Widget build(BuildContext context)=>RefreshIndicator(onRefresh:load,child:ListView(padding:const EdgeInsets.all(16),children:[
-    const Text('إدارة الخلايا',style:TextStyle(fontSize:23,fontWeight:FontWeight.bold)),
-    const Text('تشغيل وإيقاف وحدات النظام.',style:TextStyle(color:Colors.white60)),
-    if(loading)const LinearProgressIndicator(),
-    if(error!=null)Text('تعذر تحميل الخلايا: $error'),
-    ...cells.map<Widget>((v){final c=Map<String,dynamic>.from(v);return Card(color:const Color(0xFF191B28),child:SwitchListTile(value:c['enabled']==true,onChanged:(_)=>toggle(c),title:Text('${c['number']??''} · ${c['name']??''}'),subtitle:Text(c['description']??''),secondary:const Icon(Icons.hub,color:Color(0xFFB7A8FF))));}),
-  ]));
-}
-
-class AdminPage extends StatefulWidget {const AdminPage({super.key});@override State<AdminPage> createState()=>_AdminPageState();}
-class _AdminPageState extends State<AdminPage>{
-  List providers=[];bool loading=true;String? error;
-  Future<void> load()async{try{final d=await Api.get('/api/admin/providers');setState((){providers=d['providers']??[];error=null;});}catch(e){setState(()=>error=e.toString());}finally{setState(()=>loading=false);}}
-  @override void initState(){super.initState();load();}
-  Future<void> addProvider()async{
-    final n=TextEditingController(),b=TextEditingController(),m=TextEditingController(),k=TextEditingController();
-    final ok=await showDialog<bool>(context:context,builder:(ctx)=>AlertDialog(title:const Text('إضافة مزوّد API'),content:SingleChildScrollView(child:Column(mainAxisSize:MainAxisSize.min,children:[_input(n,'اسم المزود'),_input(b,'عنوان API الأساسي'),_input(m,'اسم النموذج'),_input(k,'مفتاح API',secret:true)])),actions:[TextButton(onPressed:()=>Navigator.pop(ctx,false),child:const Text('إلغاء')),FilledButton(onPressed:()=>Navigator.pop(ctx,true),child:const Text('حفظ'))]));
-    if(ok==true){try{await Api.post('/api/admin/providers',{'name':n.text,'base_url':b.text,'model':m.text,'api_key':k.text,'enabled':true});await load();_snack(context,'تمت إضافة المزود.');}catch(e){_snack(context,e.toString());}}
-    n.dispose();b.dispose();m.dispose();k.dispose();
-  }
-  Future<void> addKnowledge()async{
-    final t=TextEditingController(),body=TextEditingController();
-    final ok=await showDialog<bool>(context:context,builder:(ctx)=>AlertDialog(title:const Text('إضافة معرفة داخلية'),content:SingleChildScrollView(child:Column(mainAxisSize:MainAxisSize.min,children:[_input(t,'العنوان'),TextField(controller:body,minLines:4,maxLines:8,decoration:const InputDecoration(labelText:'المحتوى',border:OutlineInputBorder()))])),actions:[TextButton(onPressed:()=>Navigator.pop(ctx,false),child:const Text('إلغاء')),FilledButton(onPressed:()=>Navigator.pop(ctx,true),child:const Text('إضافة'))]));
-    if(ok==true){try{await Api.post('/api/admin/knowledge',{'title':t.text,'content':body.text});_snack(context,'تمت إضافة المعرفة.');}catch(e){_snack(context,e.toString());}}
-    t.dispose();body.dispose();
-  }
-  Future<void> uploadPdf()async{
-    try{final result=await FilePicker.platform.pickFiles(type:FileType.custom,allowedExtensions:['pdf'],withData:true);if(result==null)return;final f=result.files.single;if(f.bytes==null)throw Exception('تعذرت قراءة الملف');final req=http.MultipartRequest('POST',Uri.parse('${Api.base}/api/admin/knowledge/upload'));req.headers['X-Admin-Password']=Api.admin;req.files.add(http.MultipartFile.fromBytes('file',f.bytes!,filename:f.name));final res=await req.send();final body=await res.stream.bytesToString();if(res.statusCode>=400)throw Exception(body);_snack(context,'تم رفع PDF إلى قاعدة المعرفة.');}catch(e){_snack(context,e.toString());}
-  }
-  @override Widget build(BuildContext context)=>RefreshIndicator(onRefresh:load,child:ListView(padding:const EdgeInsets.all(16),children:[
-    const Text('لوحة الإدارة',style:TextStyle(fontSize:23,fontWeight:FontWeight.bold)),
-    const Text('إدارة مزودي النماذج وقاعدة المعرفة.',style:TextStyle(color:Colors.white60)),
-    const SizedBox(height:12),
-    _action(Icons.add_link,'إضافة مزوّد API','حفظ endpoint والنموذج والمفتاح على الخادم',addProvider),
-    _action(Icons.library_add,'إضافة معلومة','إضافة معلومة لها الأولوية قبل طلب النموذج',addKnowledge),
-    _action(Icons.picture_as_pdf,'رفع ملف PDF','استخراج النص وإضافته إلى المعرفة',uploadPdf),
-    _action(Icons.refresh,'تحديث المزودين','إعادة تحميل قائمة المزودين',load),
-    const SizedBox(height:12),const Text('المزوّدون',style:TextStyle(fontSize:18,fontWeight:FontWeight.bold)),
-    if(loading)const LinearProgressIndicator(),if(error!=null)Text(error!),
-    ...providers.map<Widget>((p)=>Card(color:const Color(0xFF191B28),child:ListTile(leading:const Icon(Icons.api,color:Color(0xFFB7A8FF)),title:Text(p['name']??'مزود'),subtitle:Text('${p['model']??''} · ${p['key_configured']==true?'المفتاح محفوظ':'لا يوجد مفتاح'}'),trailing:Text(p['enabled']==true?'مفعّل':'متوقف')))),
-    const SizedBox(height:12),const Text('يلزم إعداد ADMIN_PASSWORD وNEXORA_MASTER_KEY في الخادم. لا تضع مفاتيح API في ملفات التطبيق.',style:TextStyle(color:Colors.orangeAccent,height:1.5)),
-  ]));
-}
-
-Widget _input(TextEditingController c,String label,{bool secret=false})=>Padding(padding:const EdgeInsets.only(bottom:10),child:TextField(controller:c,obscureText:secret,decoration:InputDecoration(labelText:label,border:const OutlineInputBorder())));
-Widget _action(IconData icon,String title,String subtitle,VoidCallback tap)=>Card(color:const Color(0xFF191B28),child:ListTile(onTap:tap,leading:Icon(icon,color:const Color(0xFFB7A8FF)),title:Text(title),subtitle:Text(subtitle),trailing:const Icon(Icons.chevron_right)));
-void _snack(BuildContext c,String text)=>ScaffoldMessenger.of(c).showSnackBar(SnackBar(content:Text(text)));
-
-class ServerDialog extends StatefulWidget{const ServerDialog({super.key});@override State<ServerDialog> createState()=>_ServerDialogState();}
-class _ServerDialogState extends State<ServerDialog>{
-  late final url=TextEditingController(text:Api.base);late final password=TextEditingController(text:Api.admin);String status='';
-  Future<void> test()async{try{final u=url.text.trim().replaceAll(RegExp(r'/$'), '');final r=await http.get(Uri.parse('$u/health')).timeout(const Duration(seconds:10));setState(()=>status=r.statusCode==200?'الاتصال ناجح ✓':'استجابة الخادم: ${r.statusCode}');}catch(e){setState(()=>status='فشل الاتصال: $e');}}
-  @override Widget build(BuildContext context)=>AlertDialog(title:const Text('إعداد اتصال NEXORA'),content:SingleChildScrollView(child:Column(mainAxisSize:MainAxisSize.min,children:[TextField(controller:url,decoration:const InputDecoration(labelText:'رابط الخادم HTTPS')),TextField(controller:password,obscureText:true,decoration:const InputDecoration(labelText:'كلمة مرور المدير')),const SizedBox(height:8),Text(status,style:const TextStyle(fontSize:12))])),actions:[TextButton(onPressed:test,child:const Text('اختبار')),TextButton(onPressed:()=>Navigator.pop(context),child:const Text('إغلاق')),FilledButton(onPressed:()async{await Api.save(url.text,password.text);if(context.mounted)Navigator.pop(context);},child:const Text('حفظ'))]);
-  @override void dispose(){url.dispose();password.dispose();super.dispose();}
+  @override Widget build(BuildContext context)=>Scaffold(
+    appBar:AppBar(title:const Row(children:[Icon(Icons.hub,color:Color(0xFFB09EFF)),SizedBox(width:9),Text('NEXORA AI',style:TextStyle(fontWeight:FontWeight.w800))]),actions:[IconButton(onPressed:openSettings,icon:const Icon(Icons.settings_outlined))]),
+    body:Column(children:[
+      Expanded(child:messages.isEmpty?const Center(child:Padding(padding:EdgeInsets.all(28),child:Column(mainAxisSize:MainAxisSize.min,children:[
+        Icon(Icons.auto_awesome,size:62,color:Color(0xFFAA98FF)),SizedBox(height:18),
+        Text('مرحباً بك في NEXORA AI',style:TextStyle(fontSize:23,fontWeight:FontWeight.bold)),SizedBox(height:10),
+        Text('اكتب ما تريد. سيبحث NEXORA في الإنترنت عند الحاجة، ثم يحلل النتائج ويجيبك داخل المحادثة.',textAlign:TextAlign.center,style:TextStyle(color:Colors.white70,height:1.7)),
+      ]))):ListView.builder(controller:scroll,padding:const EdgeInsets.all(14),itemCount:messages.length,itemBuilder:(c,i){final m=messages[i];return Align(alignment:m.user?Alignment.centerRight:Alignment.centerLeft,child:Container(margin:const EdgeInsets.symmetric(vertical:6),padding:const EdgeInsets.all(14),constraints:const BoxConstraints(maxWidth:350),decoration:BoxDecoration(color:m.user?const Color(0xFF30275A):const Color(0xFF191B28),borderRadius:BorderRadius.circular(18)),child:SelectableText(m.text,style:const TextStyle(height:1.55))));})),
+      if(busy)const Padding(padding:EdgeInsets.symmetric(horizontal:16),child:Row(children:[SizedBox(width:16,height:16,child:CircularProgressIndicator(strokeWidth:2)),SizedBox(width:10),Text('يبحث ويحلل ويكتب الإجابة...',style:TextStyle(color:Colors.white70))])),
+      SafeArea(top:false,child:Padding(padding:const EdgeInsets.fromLTRB(12,8,12,12),child:Row(children:[
+        Expanded(child:TextField(controller:input,onSubmitted:(_)=>send(),minLines:1,maxLines:5,decoration:InputDecoration(hintText:'اكتب رسالتك...',filled:true,fillColor:const Color(0xFF191B28),contentPadding:const EdgeInsets.symmetric(horizontal:18,vertical:15),border:OutlineInputBorder(borderRadius:BorderRadius.circular(20),borderSide:BorderSide.none)))),
+        const SizedBox(width:8),IconButton.filled(onPressed:busy?null:send,icon:const Icon(Icons.arrow_upward),style:IconButton.styleFrom(backgroundColor:const Color(0xFFB09EFF),foregroundColor:const Color(0xFF171323),minimumSize:const Size(54,54))),
+      ]))),
+    ]),
+  );
 }
