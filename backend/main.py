@@ -272,9 +272,25 @@ async def ask_provider(question: str, search_results=None):
         raise HTTPException(502, "All configured AI providers failed: " + "; ".join(errors))
     raise HTTPException(503, "No enabled AI provider. Add an OpenAI-compatible provider in the admin panel.")
 
+def is_simple_greeting(message: str) -> bool:
+    normalized = re.sub(r"[\\s،.!؟?]+", "", message.lower())
+    greetings = {
+        "مرحبا", "مرحباً", "هلا", "هلو", "السلامعليكم", "سلام",
+        "صباحالخير", "مساءالخير", "اهلا", "أهلا", "hello", "hi", "hey",
+        "goodmorning", "goodevening",
+    }
+    return normalized in greetings
+
 @app.post("/api/chat")
 async def chat(body: ChatIn):
-    # Hidden internal cells: knowledge first, then web search, then the configured AI model.
+    # Internal orchestration runs behind one chat interface. Simple greetings
+    # are answered immediately; substantive requests use knowledge, web search,
+    # then the configured AI provider.
+    if is_simple_greeting(body.message):
+        answer = "مرحباً بك! أنا NEXORA AI. كيف يمكنني مساعدتك اليوم؟"
+        audit("chat_greeting", "direct response")
+        return {"answer": answer, "source": "conversation", "provider": None, "sources": []}
+
     local = find_knowledge(body.message)
     if local:
         title, content = local
@@ -286,6 +302,11 @@ async def chat(body: ChatIn):
     audit("chat_web_search", f"{len(web_results)} results")
     try:
         answer, provider = await ask_provider(body.message, web_results)
+        if web_results:
+            citations = "\\n\\nالمصادر التي عثر عليها النظام:\\n" + "\\n".join(
+                f"{i}. {item['title']} — {item['url']}" for i, item in enumerate(web_results, 1)
+            )
+            answer = answer + citations
         return {"answer": answer, "source": "web_and_provider" if web_results else "provider",
                 "provider": provider, "sources": web_results}
     except HTTPException as exc:
